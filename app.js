@@ -42,7 +42,7 @@ var conversation = new watson.ConversationV1({
 var conversationMessageAsync = Promise.promisify(conversation.message.bind(conversation))
 
 // Endpoint to be call from the client side
-app.post('/api/message', function(req, res) {
+app.post('/api/message', function (req, res) {
   var workspace = process.env.WORKSPACE_ID || '<workspace-id>';
   if (!workspace || workspace === '<workspace-id>') {
     return res.json({
@@ -74,43 +74,86 @@ app.post('/api/message', function(req, res) {
  * @return {Object}          The response with the updated message
  */
 function updateMessage(input, response) {
-  var responseText = null;
   response.output = response.output || {};
-  if (response.actions && response.actions[0].name == 'searchIndividual'){
+  var actions = response.actions || [];
+
+  var searchIndividualActions = actions.filter(a => a.name == 'searchIndividual');
+  if (searchIndividualActions.length) {
+    var searchIndividualAction = searchIndividualActions[0];
     console.log("***info*** requested individual information")
     // call external service here
     // fill personData with proper context vars
     let name = response.context.person;
-    if (!name.match(/,/)){
+    if (!name.match(/,/)) {
       let nameArr = name.split(' ');
       name = nameArr[nameArr.length - 1] + ", " + nameArr.slice(0, nameArr.length - 1).join(" ")
     }
-    console.log(response.context)
+    console.log(response)
+    var agency  = response.context.agency;
+    var branch = response.context.branch;
+    var position = response.context.position;
+    var subagency = response.context.subagency;
+    if (subagency && subagency.match('SUNY')){
+      agency = 'SUNY';
+    }
+
     let personData = {
-      AgencyName: [response.context.agency],
-      BranchName : [],
-      PayYear : ["2017"],
-      PositionName : [],
-      SortBy : "YTDPay DESC",
-      SubAgencyName : [response.context.subagency],
-      WholeName : name,
-      YTDPay : {}
+      AgencyName: [agency],
+      BranchName: [branch],
+      PayYear: ["2017"],
+      PositionName: [position],
+      SortBy: "YTDPay DESC",
+      SubAgencyName: [subagency],
+      WholeName: name,
+      YTDPay: {}
     }
     let newPayload = {};
     return seeThroughNy.getPersonSalary(personData)
-    .then(personSalariesArr => {
-      // check length of array and filter based on what they asked
-      // if it is empty then that name was not found
-      response.context.count = personSalariesArr.length;
-      if (personSalariesArr.length == 1){
-        response.context[response.actions[0].result_variable] = personSalariesArr[0];
-      }
-      // hit watson service again here to continue to next node
-      newPayload = {workspace_id: input.workspace_id, context: response.context, output: response.output};
-      return conversationMessageAsync(newPayload)
-    })
-    .then(data => updateMessage(newPayload, data))
+      .then(personSalariesArr => {
+        // check length of array and filter based on what they asked
+        // if it is empty then that name was not found
+        response.context.count = personSalariesArr.length;
+        if (personSalariesArr.length == 1) {
+          // var categories = {
+          //   "subagency": "[]",
+          //   "position": "[]",
+          //   "payRate": "[]",
+          //   "payYear": "[]",
+          //   "payBasis": "[]",
+          //   "branch": "[]",
+          //   "name": "[]",
+          //   "agency": "[]",
+          //   "totalPay": "[]"
+          // }
+          var foundPerson = personSalariesArr[0];
+          response.context[searchIndividualAction.result_variable] = foundPerson;
+          response.context.position = foundPerson.position;
+          response.context.subagency = foundPerson.subagency;
+          response.context.agency = foundPerson.agency;
+          response.context.salary = parseInt(foundPerson.payRate.replace(/\$|,/g, ''));
+          response.context.branch = foundPerson.branch;
+        }
 
+        // hit watson service again here to continue to next node
+        newPayload = {
+          workspace_id: input.workspace_id,
+          context: response.context,
+          output: response.output,
+          intents: response.intents,
+          entities: response.entities
+        };
+        return conversationMessageAsync(newPayload)
+      })
+      .then(data => updateMessage(newPayload, data))
+
+  }
+
+
+  if (response.output.action == 'clearPerson'){
+    let myName = response.context.myName;
+    response.context = {
+      myName: myName
+    };
   }
   // console.log(response)
   return Promise.resolve(response);
