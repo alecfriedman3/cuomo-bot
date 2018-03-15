@@ -22,6 +22,9 @@ var watson = require('watson-developer-cloud'); // watson sdk
 
 var app = express();
 
+const Promise = require('bluebird');
+const seeThroughNy = require('./seeThroughNy.js');
+
 // Bootstrap application settings
 app.use(express.static('./public')); // load UI from public folder
 app.use(bodyParser.json());
@@ -35,6 +38,8 @@ var conversation = new watson.ConversationV1({
   password: process.env.CONVERSATION_PASSWORD || '<password>',
   version_date: '2018-02-16'
 });
+
+var conversationMessageAsync = Promise.promisify(conversation.message.bind(conversation))
 
 // Endpoint to be call from the client side
 app.post('/api/message', function(req, res) {
@@ -53,12 +58,13 @@ app.post('/api/message', function(req, res) {
   };
 
   // Send the input to the conversation service
-  conversation.message(payload, function(err, data) {
-    if (err) {
-      return res.status(err.code || 500).json(err);
-    }
-    return res.json(updateMessage(payload, data));
-  });
+  conversationMessageAsync(payload)
+    .then(data => updateMessage(payload, data))
+    .then(response => res.json(response))
+    .catch(e => {
+      console.error(e);
+      res.status(e.code || 500).json(e)
+    })
 });
 
 /**
@@ -69,28 +75,45 @@ app.post('/api/message', function(req, res) {
  */
 function updateMessage(input, response) {
   var responseText = null;
-  if (!response.output) {
-    response.output = {};
-  } else {
-    return response;
-  }
-  if (response.intents && response.intents[0]) {
-    var intent = response.intents[0];
-    // Depending on the confidence of the response the app can return different messages.
-    // The confidence will vary depending on how well the system is trained. The service will always try to assign
-    // a class/intent to the input. If the confidence is low, then it suggests the service is unsure of the
-    // user's intent . In these cases it is usually best to return a disambiguation message
-    // ('I did not understand your intent, please rephrase your question', etc..)
-    if (intent.confidence >= 0.75) {
-      responseText = 'I understood your intent was ' + intent.intent;
-    } else if (intent.confidence >= 0.5) {
-      responseText = 'I think your intent was ' + intent.intent;
-    } else {
-      responseText = 'I did not understand your intent';
+  response.output = response.output || {};
+  if (response.actions && response.actions[0].name == 'searchIndividual'){
+    console.log("***info*** requested individual information")
+    // call external service here
+    // fill personData with proper context vars
+    let name = response.context.person;
+    if (!name.match(/,/)){
+      let nameArr = name.split(' ');
+      name = nameArr[nameArr.length - 1] + ", " + nameArr.slice(0, nameArr.length - 1).join(" ")
     }
+    console.log(response.context)
+    let personData = {
+      AgencyName: [response.context.agency],
+      BranchName : [],
+      PayYear : ["2017"],
+      PositionName : [],
+      SortBy : "YTDPay DESC",
+      SubAgencyName : [response.context.subagency],
+      WholeName : name,
+      YTDPay : {}
+    }
+    let newPayload = {};
+    return seeThroughNy.getPersonSalary(personData)
+    .then(personSalariesArr => {
+      // check length of array and filter based on what they asked
+      // if it is empty then that name was not found
+      response.context.count = personSalariesArr.length;
+      if (personSalariesArr.length == 1){
+        response.context[response.actions[0].result_variable] = personSalariesArr[0];
+      }
+      // hit watson service again here to continue to next node
+      newPayload = {workspace_id: input.workspace_id, context: response.context, output: response.output};
+      return conversationMessageAsync(newPayload)
+    })
+    .then(data => updateMessage(newPayload, data))
+
   }
-  response.output.text = responseText;
-  return response;
+  // console.log(response)
+  return Promise.resolve(response);
 }
 
 module.exports = app;
